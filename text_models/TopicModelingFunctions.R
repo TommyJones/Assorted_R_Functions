@@ -9,7 +9,6 @@ library(lda)
 library(slam)
 library(wordcloud)
 
-source("X:/CBET/Coherence/coherence.R")
 
 MakeBatches <- function(vec, num.batches){
   # divides vec into num.batches
@@ -302,13 +301,11 @@ DocSSE <- cmpfun(function(doc.row, doc.name, doc.topics, topic.terms){
 
 ParallelSSE <- function(outputlist, dtm.sparse, cpus){
   # warning, only works for a specifically named and formatted input
-  # These inputs are in line with our standard on CBET
   
   require(snowfall)
   
   sfInit(parallel=TRUE, cpus=cpus)
-  sfExport("dtm.sparse")
-  sfSource("x:/CBET/CBET_CommonFunctions.R")
+  sfExport(list=c("dtm.sparse", "DocSSE"))
   sfLibrary(Matrix)
   
   
@@ -369,7 +366,7 @@ GetTopTerms <- function(topic.terms, M){
 }
 
 TmLDAWrapper <- function(dtm, k){
-  # wrapper to run LDA for CBET with our pre-determined specifications from Griffiths and Steyvers 2004 (the default for topicmodels)
+  # wrapper to run LDA for our pre-determined specifications from Griffiths and Steyvers 2004 (the default for topicmodels)
   
   lda <- LDA(x=dtm, 
              k=k, 
@@ -425,14 +422,13 @@ DocCosSim <- cmpfun(function(doc.row, doc.index, doc.topics, topic.terms){
 
 ParallelCosSim <- function(outputlist, dtm.sparse, cpus){
     # warning, only works for a specifically named and formatted input
-    # These inputs are in line with our standard on CBET
+    # These inputs are in line with our standards
     
     require(snowfall)
     
     sfInit(parallel=TRUE, cpus=cpus)
     sfExport("outputlist")
-    sfExport("dtm.sparse")
-    sfSource("x:/CBET/CBET_CommonFunctions.R")
+    sfExport(c("dtm.sparse", "DocCosSim"))
     sfLibrary(Matrix)
     
     
