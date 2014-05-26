@@ -1,7 +1,7 @@
-# Suite of functions to facilitate basic text mining at STPI
+# Suite of functions to facilitate basic text mining 
 # This script focuses on basic text curation and some text clustering
 
-# last update 02/11/2014 - twjones
+# last update 02/11/2014 
 
 
 # Dependent packages
