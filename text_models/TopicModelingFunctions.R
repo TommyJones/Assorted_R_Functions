@@ -483,3 +483,146 @@ TopicWordCloud <- function(term.freq.vec, title="", outfilepath=""){
         title(main=title, line=-2)
     dev.off()
 }
+
+TopicModelR2 <- function(dtm.sparse, topic.terms, doc.topics, normalize=TRUE, parallel=TRUE, cpus=4){
+    # Function to calculate R-squared for a topic model. 
+    # This uses the interpretation of R-squared as the proportion of variance
+    # explained by the model.
+    #
+    # Inputs: 
+    # dtm.sparse = a documents X terms dimensional document term matrix in 
+    #   sparse format from the Matrix package or a regular R matrix. 
+    #   Will *not* work on DTMs from the tm package or simple triplet matrices from the slam package.
+    # topic.terms = a topics X terms dimensional matrix where each entry is p(term|topic)
+    # doc.topics = a documents X topics dimensional matrix where each entry is p(topic|document)
+    # normalize = a logical. Do you want to normalize all vectors so they add to 1? 
+    #   (removes effect of document length on SSE and SST)
+    # parallel = a logical. Do you have snowfall installed? Would you like to parallelize?
+    # cpus = number of threads over which to parallelize.
+    #
+    # Note: all input matrices must have rownames and colnames
+    #
+    # Output:
+    # a list with 3 elements - 
+    #   r2 = R-squared of the model
+    #   sse = the sum of squared errors for each document. This is a vector, the square root of which
+    #       gives the l2-norm or euclidean distance from each document to its fitted value
+    #   sst = the total sum of squares for each document. This is a vector, the square root of which 
+    #       gives the l2-norm or euclidean distance from each document to the "mean" document.
+    
+    # ensure that all inputs are sorted correctly
+    topic.terms <- topic.terms[ colnames(doc.topics) , colnames(dtm.sparse) ]
+    
+    doc.topics <- doc.topics[ rownames(dtm.sparse) , ]
+    
+    # get ybar, the "average" document
+    ybar.row <- colMeans(dtm.sparse)
+    
+    # declare functions to calculate SSE and SST for single documents
+    SSE <- function(dtm.row, doc.topic.row, topic.terms, normalize){
+        y <- as.numeric(dtm.row) 
+        yhat <- as.numeric( doc.topic.row ) %*% topic.terms
+        
+        if( normalize ){
+            y <- y / sum(y)
+        }else{
+            yhat <- yhat * sum(y) # makes yhat a "document" as long as y
+        }
+        
+        ydiff <- yhat - y
+        
+        result <- sum( ydiff * ydiff )
+        
+        return(result)
+    }
+    
+    SST <- function(dtm.row, ybar.row, normalize){
+        y <- as.numeric(dtm.row)
+        ybar <- as.numeric(ybar.row)
+        
+        if( normalize ){
+            y <- y / sum(y)
+            ybar <- ybar / sum(ybar)
+        }
+        
+        ydiff <- ybar - y
+        
+        result <- sum( ydiff * ydiff )
+        
+        return(result)
+    }
+    
+    if( ! parallel ){
+        sse.result <- vector(mode="list", length=nrow(dtm.sparse))
+        sst.result <- sse.result
+        
+        for( j in 1:nrow(dtm.sparse)){
+            see.result[[ j ]] <- SSE(dtm.row=dtm.sparse[ j , ],
+                                     doc.topic.row=doc.topics[ j , ],
+                                     topic.terms=topic.terms,
+                                     normalize=normalize)
+            
+            sst.result[[ j ]] <- SST(dtm.row=dtm.sparse[ j , ],
+                                     ybar.row=ybar.row,
+                                     normalize=normalize)
+        }
+        
+        sse.result <- unlist(sse.result)
+        sst.result <- unlist(sst.result)
+        names(sse.result) <- rownames(dtm.sparse)
+        names(sst.result) <- rownames(dtm.sparse)
+    }else{
+        require(snowfall)
+        
+        # get batches of documents to parallelize over
+        parallel.list <- vector(mode="list", length=cpus)
+        
+        div <- floor(nrow(dtm.sparse) / cpus)
+        remainder <- nrow(dtm.sparse) - cpus * div
+        
+        parallel.list[[ 1 ]] <- 1:div
+        
+        for( j in 2:(cpus - 1) ){
+            parallel.list[[ j ]] <- (max(parallel.list[[ j - 1 ]]) + 1 ):(j * div)
+        }
+        
+        parallel.list[[ cpus ]] <- (max(parallel.list[[ cpus - 1 ]]) + 1):nrow(dtm.sparse)
+        
+        # put the distinct rows of dtm.sparse into a list to parallelize over, saves on memory
+        parallel.list <- lapply(parallel.list, function(ROWS){
+            dtm.sparse[ ROWS , ]
+        })
+        
+        sfInit( parallel=TRUE, cpus=cpus)
+        sfExport(list=c("doc.topics", "topic.terms", "ybar.row"))
+        sfLibrary(Matrix)
+        
+        pll.result <- sfLapply(parllel.list, function(PARTIAL.DTM){
+            parallel.result <- vector(mode="list", length=nrow(PARTIAL.DTM))
+            
+            for(j in 1:length(parallel.result)){
+                parallel.result.sse[[ j ]] <- SSE(dtm.row=PARITAL.DTM[ j , ],
+                                                  doc.topic.row=doc.topics[ j , ],
+                                                  topic.terms=topic.terms,
+                                                  normalize=normalize)
+                parallel.result.sst[[ j ]] <- SST(dtm.row=PARITAL.DTM[ j , ],
+                                                  ybar.row=ybar.row,
+                                                  normalize=normalize)
+            }
+            
+            return(list(sse.result=parallel.result.sse, sst.result=parallel.result.sst))
+        })
+        
+        sse.result <- unlist(lapply(pll.result, function(x) x$sse.result))
+        sst.result <- unlist(lapply(pll.result, function(x), x$sst.result))
+        
+        names(sse.result) <- rownames(dtm.sparse)
+        names(sst.result) <- rownames(dtm.sparse)
+    }
+    
+    r2 <- 1 - sum(sse.result) / sum(sst.result)
+    
+    final.result <- list(r2=r2, sse=sse.result, sst=sst.result)
+    
+    return(final.result)
+}
