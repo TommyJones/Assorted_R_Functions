@@ -557,7 +557,7 @@ TopicModelR2 <- function(dtm.sparse, topic.terms, doc.topics, normalize=TRUE, pa
         sst.result <- sse.result
         
         for( j in 1:nrow(dtm.sparse)){
-            see.result[[ j ]] <- SSE(dtm.row=dtm.sparse[ j , ],
+            sse.result[[ j ]] <- SSE(dtm.row=dtm.sparse[ j , ],
                                      doc.topic.row=doc.topics[ j , ],
                                      topic.terms=topic.terms,
                                      normalize=normalize)
@@ -571,6 +571,7 @@ TopicModelR2 <- function(dtm.sparse, topic.terms, doc.topics, normalize=TRUE, pa
         sst.result <- unlist(sst.result)
         names(sse.result) <- rownames(dtm.sparse)
         names(sst.result) <- rownames(dtm.sparse)
+        
     }else{
         require(snowfall)
         
@@ -590,22 +591,25 @@ TopicModelR2 <- function(dtm.sparse, topic.terms, doc.topics, normalize=TRUE, pa
         
         # put the distinct rows of dtm.sparse into a list to parallelize over, saves on memory
         parallel.list <- lapply(parallel.list, function(ROWS){
-            dtm.sparse[ ROWS , ]
+            my.dtm <- dtm.sparse[ ROWS , ]
+            my.doc.topics <- doc.topics[ ROWS , ]
+            return(list(my.dtm=my.dtm, my.doc.topics=my.doc.topics))
         })
         
         sfInit( parallel=TRUE, cpus=cpus)
-        sfExport(list=c("doc.topics", "topic.terms", "ybar.row"))
+        sfExport(list=c("doc.topics", "topic.terms", "ybar.row", "SSE", "SST", "normalize"))
         sfLibrary(Matrix)
         
-        pll.result <- sfLapply(parllel.list, function(PARTIAL.DTM){
-            parallel.result <- vector(mode="list", length=nrow(PARTIAL.DTM))
+        pll.result <- sfLapply(parallel.list, function(PARTIAL){
+            parallel.result.sse <- vector(mode="list", length=nrow(PARTIAL$my.dtm))
+            parallel.result.sst <- parallel.result.sse
             
-            for(j in 1:length(parallel.result)){
-                parallel.result.sse[[ j ]] <- SSE(dtm.row=PARITAL.DTM[ j , ],
-                                                  doc.topic.row=doc.topics[ j , ],
+            for(j in 1:length(parallel.result.sse)){
+                parallel.result.sse[[ j ]] <- SSE(dtm.row=PARTIAL$my.dtm[ j , ],
+                                                  doc.topic.row=PARTIAL$my.doc.topics[ j , ],
                                                   topic.terms=topic.terms,
                                                   normalize=normalize)
-                parallel.result.sst[[ j ]] <- SST(dtm.row=PARITAL.DTM[ j , ],
+                parallel.result.sst[[ j ]] <- SST(dtm.row=PARTIAL$my.dtm[ j , ],
                                                   ybar.row=ybar.row,
                                                   normalize=normalize)
             }
@@ -613,8 +617,10 @@ TopicModelR2 <- function(dtm.sparse, topic.terms, doc.topics, normalize=TRUE, pa
             return(list(sse.result=parallel.result.sse, sst.result=parallel.result.sst))
         })
         
+        sfStop()
+        
         sse.result <- unlist(lapply(pll.result, function(x) x$sse.result))
-        sst.result <- unlist(lapply(pll.result, function(x), x$sst.result))
+        sst.result <- unlist(lapply(pll.result, function(x) x$sst.result))
         
         names(sse.result) <- rownames(dtm.sparse)
         names(sst.result) <- rownames(dtm.sparse)
@@ -625,4 +631,85 @@ TopicModelR2 <- function(dtm.sparse, topic.terms, doc.topics, normalize=TRUE, pa
     final.result <- list(r2=r2, sse=sse.result, sst=sst.result)
     
     return(final.result)
+}
+
+CalcDist <- function(x, FUN){
+    # x = matrix whose row by row distance is to be calculated
+    # FUN = distance function taking the form function(p, q)
+    
+    x <- Matrix(x, sparse=TRUE) # converts x to a sparse matrix, possibly unnecessary
+    
+    sfInit(parallel=TRUE, cpus=8)
+    sfExport(list=c("FUN", "x"))
+    sfLibrary(Matrix)
+    
+    output <- sfLapply(1:(nrow(x) - 1), function(j){
+        # initialize empty vector
+        result <- vector(mode="numeric", length=nrow(x))
+        
+        # fill in entries of vector from k to the end with JSD
+        for(k in (j + 1):nrow(x)){
+            result[ k ] <- FUN(x[ j , ], x[ k , ])
+        }
+        
+        result <- Matrix(result, nrow=1, ncol=length(result), sparse=TRUE)
+        
+        return(result)
+    })
+    
+    sfStop()
+    
+    # add an additional row to make it the right dimensions
+    output[[ length(output) + 1 ]] <- Matrix(rep(0, ncol(output[[ 1 ]])), nrow=1, ncol=ncol(output[[ 1 ]]), sparse=TRUE)
+    
+    names(output) <- rownames(x)
+    
+    
+    # divide things into batches to avoid stack overflow
+    # also, note to self: update MakeBatches()
+    batches <- 1:length(output)
+    divider <- floor(length(batches)/10)
+    
+    batches <- lapply(c(seq(divider, length(batches), by=divider)), function(y){
+        result <- (y - divider + 1):y
+    })
+    
+    if(length(unlist(batches)) < length(output)){
+        batches[[ length(batches) + 1 ]] <- (max(unlist(batches)) + 1):length(output)
+    }
+    
+    final.result <- lapply(batches, function(BATCH){
+        do.call(rBind, output[ BATCH ])
+    })
+    
+    final.result <- do.call(rBind, final.result)
+    
+    final.result <- final.result + t(final.result)
+    
+    colnames(final.result) <- names(output)
+    rownames(final.result) <- colnames(final.result)
+    
+    return(final.result)
+    
+}
+
+HellDist = function(p,q){
+    #Calculates the hellinger distances between two discrete probability distributions p and q
+    
+    # don't divide by zero, we'll all die
+    p[p==0] <- 10^-4
+    q[q==0] <- 10^-4
+    
+    #make unit length
+    p = p/sum(p)
+    q = q/sum(q)
+    
+    # set up for vectorization
+    m <- sqrt(p) - sqrt(q)
+    
+    m <- m * m
+    
+    result <- 1/sqrt(2) * sqrt(sum(m))
+    
+    return(result)
 }
