@@ -2,7 +2,7 @@ library(compiler)
 library(proxy)
 library(cluster)
 library(tm)
-library(topicmodels)
+# library(topicmodels)
 library(mallet)
 library(Matrix)
 library(lda)
@@ -442,30 +442,79 @@ ParallelCosSim <- function(outputlist, dtm.sparse, cpus){
     return(result)
 }
 
-Dtm2Docs <- cmpfun(function(dtm.sparse, parallel=FALSE, cpus=NULL){
-	# function creates a corpus of text documents based on term frequencies of a document term matrix
-	terms <- colnames(dtm.sparse)
-    if( ! parallel ){
-        result <- apply(dtm.sparse, 1, function(x){
-            paste( unlist( mapply( function(x,y) rep(y, x), x, terms)), collapse=" " )
-        })
-    }else{
-        library( snowfall )
-        sfInit( parallel=TRUE, cpus=cpus )
-        sfLibrary(Matrix)
-        sfExport( "terms" )
+Dtm2Docs <- function(dtm, parallel=FALSE, cpus=NULL){
+    
+    # define a function to perform on a dtm row
+    MakeDoc <- function(dtm_row){
         
-        result <- sfApply(dtm.sparse, 1, function(x){
-            paste( unlist( mapply( function(x,y) rep(y, x), x, terms)), collapse=" " )
+        tmp <- dtm_row[ dtm_row > 0 ]
+        
+        # if there are no words in the dtm, then return an empty character
+        if( length(tmp) == 0 ){
+            return(" ")
+        }
+        
+        # Assuming all systems go, create the document
+        vocab <- names(tmp)
+        
+        doc <- sapply(1:length(vocab), function(k){
+            rep(x = vocab[ k ], times = tmp[ k ])
+        })
+        
+        doc <- paste(unlist(doc), collapse=" ")
+        
+        return(doc)
+    }
+    
+    
+    #### If don't want to parallelize (and you like waiting...)
+    if( ! parallel ){
+        result <- sapply(1:nrow(dtm), function(j){
+            MakeDoc(dtm_row = dtm[ j , ])
+        })
+        
+        names(result) <- rownames(dtm)
+        
+        return(result)  # function exits here if parallel=FALSE
+        
+        ### If you do want to parallelize
+    }else{
+        if(is.null(cpus)){
+            stop("You must specify the number of cpus when parallel=TRUE")
+        }
+        
+        cpus <- round(cpus) # in case some bozo gives a non-integer value
+        
+        # divide the dtm by rows so it goes out to each processor
+        breaks <- round(nrow(dtm) / cpus)
+        
+        indeces <- seq(from=1, to=nrow(dtm), by=breaks)
+        
+        dtm_divided <- lapply(indeces, function(j){
+            dtm[ j:min(j + breaks - 1, nrow(dtm)) , ]
+        })
+        
+        sfInit(parallel=TRUE, cpus=cpus)
+        sfLibrary(Matrix)
+        sfExport(list=c("MakeDoc"))
+        
+        result <- sfLapply(dtm_divided, function(ROWS){
+            sapply(1:nrow(ROWS), function(j){
+                MakeDoc(dtm_row = ROWS[ j , ])
+            })
         })
         
         sfStop()
-    }
-    
-    gc()
-    
-    return(result)
-})
+        
+        result <- unlist(result)
+        
+        names(result) <- rownames(dtm)
+        
+        return(result) # function exits here if parallel=TRUE
+    }    
+}
+
+
 
 
 TopicWordCloud <- function(term.freq.vec, title="", outfilepath=""){

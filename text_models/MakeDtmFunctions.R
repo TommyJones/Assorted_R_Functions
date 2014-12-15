@@ -3,6 +3,8 @@ require(slam)
 require(Matrix)
 require(snowfall)
 
+options(mc.cores=1)
+
 Files2Vec <- function(directory){
 	file.list <- grep("\\.txt", dir(directory))
 	
@@ -58,7 +60,7 @@ NgramTokenizer <- function(min, max) {
   return(result)
 }
 
-Vec2Dtm <- function(vec, max.n.gram=1, remove.stopwords=TRUE, lower=TRUE, remove.punctuation=TRUE, remove.numbers=TRUE, custom.stopwords=NULL){
+Vec2Dtm <- function(vec, max.n.gram=1, remove.stopwords=TRUE, lower=TRUE, remove.punctuation=TRUE, remove.numbers=TRUE, stem.document=FALSE, custom.stopwords=NULL){
 	# for now, it is strongly advised to accept the defaults for lower, remove.punctuation, and remove.numbers
 	# Other functions are built assuming that the column headings of a dtm contain only letters and underscores "_"
 	
@@ -85,9 +87,18 @@ Vec2Dtm <- function(vec, max.n.gram=1, remove.stopwords=TRUE, lower=TRUE, remove
     
     if( remove.stopwords ){
         corp <- tm_map(x=corp, removeWords, stopwords)
+        corp <- tm_map(x = corp, stripWhitespace)
+    }
+    
+    if(stem.document){
+        corp <- tm_map(x=corp, stemDocument)
     }
 	
-	dtm <- DocumentTermMatrix(corp, control=list(tokenize=NgramTokenizer(min=1, max=max.n.gram)))
+    if( max.n.gram > 1 ){
+        dtm <- DocumentTermMatrix(corp, control=list(tokenize=NgramTokenizer(min=1, max=max.n.gram)))
+    }else{
+        dtm <- DocumentTermMatrix(corp)
+    }
 	
 	dtm <- MakeSparseDTM(dtm=dtm)
 	
